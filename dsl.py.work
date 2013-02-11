@@ -1,0 +1,226 @@
+import jsonpath
+import re
+import operator
+
+debug = True
+
+def Re(s, regex):
+    return re.match(regex, s) is not None
+
+def In(v, l):
+    return v in l
+
+class BinaryPredicate(object):
+
+    def __init__(self, p1, p2, op):
+        self.p1 = p1
+        self.p2 = p2
+        self.op = op
+
+    def __and__(self, p2):
+        return BinaryPredicate(self, p2, operator.and_)
+
+    def __or__(self, p2):
+        return BinaryPredicate(self, p2, operator.or_)
+
+    def _eval(self, request_context, p):
+        if callable(p):
+            return p(request_context)
+        else:
+            return p
+
+    def __call__(self, request_context):
+        return self.eval(request_context)
+
+    def eval(self, request_context):
+        r1 = self._eval(request_context, self.p1)
+        r2 = self._eval(request_context, self.p2)
+
+        global debug
+        if debug:
+            print "EVAL:"
+            print "\tp1 =", self.p1
+            print "\tp2 =", self.p2
+            print "\treq =", request_context 
+            print "\tr1 =", r1
+            print "\tr2 =", r2
+            print "\top =", self.op
+
+        if r1 is None and r2 is None:
+            return False
+
+        r = self.op(r1, r2)
+        if debug:
+            print "\tresult = ", r
+
+        return r
+
+class ContextField(object):
+
+    def __init__(self, field_name, field_type = None, is_attr = False):
+        self.field_name = field_name
+        self.field_type = field_type
+        self.is_attribute = is_attr
+        self.path_expr = None
+        self.array_expr = None
+
+    def __str__(self):
+        return "ContextField: field_name = %s, field_type = %s, is_attribute = %s, path_expr = %s" % (self.field_name, self.field_type, str(self.is_attribute), self.path_expr)
+
+    def __eq__(self, p2):
+        return BinaryPredicate(self, p2, operator.eq)
+
+    def __and__(self, p2):
+        return BinaryPredicate(self, p2, operator.and_)
+
+    def __or__(self, p2):
+        return BinaryPredicate(self, p2, operator.or_)
+
+    def __lt__(self, p2):
+        return BinaryPredicate(self, p2, operator.lt)
+
+    def __div__(self, rexpr):
+        return BinaryPredicate(self, rexpr, Re)
+
+    def __getitem__(self, n):
+        self.field_name = n
+        return self
+
+    def path(self, path_expr):
+        self.value = path_expr
+        self.path_expr = path_expr
+        return self
+
+    def In(self, l):
+        self.value = l
+        self.array_expr = l
+        return self
+
+    def __call__(self, request_context):
+
+        root = None
+
+        if self.field_type is not None and self.is_attribute:
+            if self.field_type in request_context:
+                x = request_context[self.field_type]
+                if 'attributes' in x:
+                    x = x['attributes']
+                    if self.field_name in x:
+                        root = x[self.field_name]
+        elif self.field_type is not None:
+            if self.field_type in request_context:
+                x = request_context[self.field_type]
+                if self.field_name in x:
+                    root = x[self.field_name]
+        elif self.field_type is None and self.is_attribute:
+            if 'attributes' in request_context:
+                x = request_context['attributes']
+                if self.field_name in x:
+                    root = x[self.field_name]
+        else:
+            if self.field_name in request_context:
+                root =  request_context[self.field_name]
+
+        if self.path_expr is not None:
+            if debug:
+                print "jsonpath context: ", root
+                print "\tpath: ", self.path_expr
+
+            root = jsonpath.jsonpath(root, self.path_expr)
+
+            if debug:
+                print "\tjsonpath result: ", root
+                print "\tpath: ", self.path_expr
+
+            if not root:
+                root = None
+            else:
+                root = root[0]
+
+        if self.array_expr is not None:
+            root = root in self.array_expr
+
+        print "Call returns: " , root
+        return root
+
+    def eval(self, request_context):
+        return self(request_context)
+
+class ContextOld(object):
+
+    def __init__(self, field_creator, attribute_field_creator, request_header_field_creator):
+        self.field_creator = field_creator
+        self.attribute_field_creator = attribute_field_creator
+        self.request_header_field_creator = request_header_field_creator
+
+    def __getattr__(self, n):
+
+        if n == 'attributes':
+            return self.attribute_field_creator(n)
+        elif n == 'headers':
+            return self.request_header_field_creator(n)
+        else:
+            return self.field_creator(n)
+
+    def __getitem__(self, n):
+        return self.attribute_field_creator(n)
+
+class Context(object):
+
+    def __init__(self, field_creator, attribute_field_creator, request_header_field_creator):
+        self.field_creator = field_creator
+        self.attribute_field_creator = attribute_field_creator
+        self.request_header_field_creator = request_header_field_creator
+
+    def __getattr__(self, n):
+
+        if n == 'attributes':
+            return self.attribute_field_creator(n)
+        elif n == 'headers':
+            return self.request_header_field_creator(n)
+        else:
+            return self.field_creator(n)
+
+    def __getitem__(self, n):
+        return self.attribute_field_creator(n)
+
+class SubjectField(ContextField):
+    def __init__(self, field_name):
+        super(SubjectField, self).__init__(field_name, 'subject')
+
+class SubjectAttributeField(ContextField):
+    def __init__(self, field_name):
+        super(SubjectAttributeField, self).__init__(field_name, 'subject', is_attr = True)
+
+class ResourceField(ContextField):
+    def __init__(self, field_name):
+        super(ResourceField, self).__init__(field_name, 'resource')
+
+class ResourceAttributeField(ContextField):
+    def __init__(self, field_name):
+        super(ResourceAttributeField, self).__init__(field_name, 'resource', is_attr = True)
+
+class RequestField(ContextField):
+    def __init__(self, field_name):
+        super(RequestField, self).__init__(field_name, None)
+
+class RequestAttributeField(ContextField):
+    def __init__(self, field_name):
+        super(RequestAttributeField, self).__init__(field_name, None, is_attr = True)
+
+class RequestHeaderField(ContextField):
+    def __init__(self, field_name):
+        super(RequestHeaderField, self).__init__(field_name, 'headers')
+
+class Http(object):
+    GET = "GET"
+    PUT = "PUT"
+    POST = "POST"
+    HEAD = "HEAD"
+    DELETE = "DELETE"
+
+Subject  = Context(SubjectField, SubjectAttributeField, None)
+Resource = Context(ResourceField, ResourceAttributeField, None)
+Request  = Context(RequestField, RequestAttributeField, RequestHeaderField)
+
+Http = Http()
