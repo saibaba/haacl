@@ -2,7 +2,7 @@ import jsonpath
 import re
 import operator
 
-debug = True
+dsl_debug = True
 
 def convert_template_to_regex(template):
     tre = re.compile('(\{([^/]+)\})')
@@ -16,7 +16,7 @@ def convert_template_to_regex(template):
 
     r = re.compile(rexpr)
 
-    if debug:
+    if dsl_debug:
         print "Template %s converted to regex: %s" % (template, rexpr)
 
     return r
@@ -34,7 +34,7 @@ def Lt(l, r, env):
     return operator.lt(l, r)
 
 def Re(s, regex, env):
-    if debug:
+    if dsl_debug:
         print "Re Matching string %s for re %s" % (s, regex)
     return re.match(regex, s) is not None
 
@@ -75,8 +75,8 @@ class BinaryPredicate(object):
         r1 = self._eval(request_context, self.p1, env)
         r2 = self._eval(request_context, self.p2, env)
 
-        global debug
-        if debug:
+        global dsl_debug
+        if dsl_debug:
             print "EVAL:"
             print "\tp1 =", self.p1
             print "\tp2 =", self.p2
@@ -89,7 +89,7 @@ class BinaryPredicate(object):
             return False
 
         r = self.op(r1, r2, env)
-        if debug:
+        if dsl_debug:
             print "\tresult = ", r
 
         return r
@@ -127,9 +127,7 @@ class ContextField(object):
         return BinaryPredicate(self, template_rexpr, Te)
 
     def __getitem__(self, n):
-        print "**** getitem called for %s on %s" % (n, str(self))
         self.field_name = n
-        print "\t**** getitem called for %s on %s" % (n, str(self))
         return self
 
     def __getattr__(self, n):
@@ -151,6 +149,8 @@ class ContextField(object):
 
     def __call__(self, request_context, env):
 
+        global dsl_debug
+ 
         root = None
 
         p = request_context
@@ -158,7 +158,6 @@ class ContextField(object):
 
         for i in range(l):
             n = self.access_path[i]
-            print "\nTrying to extract", n, "from",  p
             if n in p:
                 p = p[n]
             else:
@@ -173,13 +172,13 @@ class ContextField(object):
         root = p
 
         if self.is_json:
-            if debug:
+            if dsl_debug:
                 print "jsonpath context: ", root
                 print "\tpath: ", self.value
 
             root = jsonpath.jsonpath(root, self.value)
 
-            if debug:
+            if dsl_debug:
                 print "\tjsonpath result: ", root
                 print "\tpath: ", self.value
 
@@ -188,7 +187,9 @@ class ContextField(object):
             else:
                 root = root[0]
 
-        print "Call returns: " , root
+        if dsl_debug:
+            print "Call returns: " , root
+
         return root
 
     def eval(self, request_context, env):
@@ -209,7 +210,6 @@ class Context(object):
         r = getattr(context_field, n)
 
         return r
-
 
 class Http(object):
     GET = "GET"
@@ -246,6 +246,11 @@ class UrlContext(object):
         getattr(context_field, 'url')
         return context_field % rhs
 
+    def __div__(self, rhs):
+        context_field = ContextField()
+        getattr(context_field, 'url')
+        return context_field / rhs
+
 class HeadersContext(object):
     def __getitem__(self, name):
         context_field = ContextField()
@@ -258,10 +263,65 @@ class ResourceHeadersContext(object):
         getattr(context_field, 'resource')
         return context_field['headers']
 
+class ContentContext(object):
+    def __getitem__(self, name):
+        context_field = ContextField()
+        return getattr(context_field, 'content')
+
+class ResourceContentContext(object):
+    def __getitem__(self, name):
+        context_field = ContextField()
+        getattr(context_field, 'resource')
+        return getattr(context_field, 'content')
+
+    def path(self, path_expr):
+        context_field = ContextField()
+        return context_field.path(path_expr)
+
 Method = MethodContext()
 Url = UrlContext()
 Headers = HeadersContext()
+Content = ContentContext()
+
 ResourceHeaders = ResourceHeadersContext()
+ResourceContent = ResourceContentContext()
+
+
+class Policy(object):
+    def __init__(self, rules, override):
+        self.rules = rules
+        self.override = override
+
+    def eval(self, request_context):
+
+        no = 0
+
+        for rule, result in self.rules.items():
+            no += 1
+            env = {}
+            matched = rule.eval(request_context, env)
+
+            if self.override == AllowOverrides:
+                if matched:
+                    if dsl_debug:
+                        print "Rule # %s is winner" % (no)
+                    return result
+            if self.override == DenyOverrides:
+                if not matched:
+                    if dsl_debug:
+                        print "Rule # %s is winner" % (no)
+                    return result
+
+        return Deny
 
 GET = "GET"
+PUT = "PUT"
+POST = "POST"
+DELETE = "DELETE"
+HEAD = "HEAD"
 
+Allow = True
+Deny = False
+AllowOverrides = 0
+DenyOverrides = 1
+Ignore = 2
